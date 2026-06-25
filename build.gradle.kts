@@ -61,9 +61,10 @@ intellijPlatform {
     pluginVerification {
         ides {
             // Verify the single artifact against the actual target IDEs (all branch 261).
-            create("WS", "2026.1") // WebStorm
-            create("RD", "2026.1") // Rider
-            create("IU", "2026.1") // IntelliJ IDEA (compile target)
+            // useInstaller = false uses the repackaged repo artifacts (required for Rider, etc.).
+            create("WS", "2026.1") { useInstaller = false } // WebStorm
+            create("RD", "2026.1") { useInstaller = false } // Rider
+            create("IU", "2026.1") { useInstaller = false } // IntelliJ IDEA (compile target)
         }
     }
 }
