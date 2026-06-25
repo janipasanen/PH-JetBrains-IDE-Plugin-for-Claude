@@ -31,6 +31,12 @@ class ClaudeSettings : SimplePersistentStateComponent<ClaudeSettings.State>(Stat
 
         /** Emit token-level streaming (`--include-partial-messages`). */
         var streamPartialMessages by property(true)
+
+        /** Use the JCEF (rich Markdown) transcript when available; falls back to Swing otherwise. */
+        var useRichUi by property(false)
+
+        /** Path to an MCP config file passed via `--mcp-config` (blank = none). */
+        var mcpConfigPath by string("")
     }
 
     var claudePath: String
@@ -52,6 +58,14 @@ class ClaudeSettings : SimplePersistentStateComponent<ClaudeSettings.State>(Stat
     var streamPartialMessages: Boolean
         get() = state.streamPartialMessages
         set(value) { state.streamPartialMessages = value }
+
+    var useRichUi: Boolean
+        get() = state.useRichUi
+        set(value) { state.useRichUi = value }
+
+    var mcpConfigPath: String
+        get() = state.mcpConfigPath.orEmpty()
+        set(value) { state.mcpConfigPath = value }
 
     companion object {
         const val DEFAULT_PERMISSION_MODE = "default"

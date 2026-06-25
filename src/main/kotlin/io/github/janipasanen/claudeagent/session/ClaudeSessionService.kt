@@ -181,6 +181,7 @@ class ClaudeSessionService(private val project: Project) : Disposable {
         cmd.addParameters("--permission-prompt-tool", "stdio")
         cmd.addParameters("--permission-mode", settings.permissionMode)
         if (settings.model.isNotBlank()) cmd.addParameters("--model", settings.model)
+        if (settings.mcpConfigPath.isNotBlank()) cmd.addParameters("--mcp-config", settings.mcpConfigPath)
         sessionId?.let { cmd.addParameters("--session-id", it) }
         if (settings.extraArgs.isNotBlank()) cmd.addParameters(ParametersListUtil.parse(settings.extraArgs))
         return cmd

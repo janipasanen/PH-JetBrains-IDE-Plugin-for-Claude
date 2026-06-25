@@ -19,6 +19,7 @@ sealed interface ClaudeEvent {
         val model: String?,
         val permissionMode: String?,
         val tools: List<String>,
+        val slashCommands: List<String>,
         val apiKeySource: String?,
         val claudeCodeVersion: String?,
     ) : ClaudeEvent

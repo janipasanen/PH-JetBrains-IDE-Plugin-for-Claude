@@ -35,6 +35,12 @@ class ClaudeSettingsConfigurable : Configurable {
                             "Interactive per-tool approval arrives in a later version.",
                     )
             }
+            row("MCP config file:") {
+                textField()
+                    .bindText(settings::mcpConfigPath)
+                    .align(AlignX.FILL)
+                    .comment("Optional path passed via <code>--mcp-config</code> to add MCP servers.")
+            }
             row("Extra CLI arguments:") {
                 textField()
                     .bindText(settings::extraArgs)
@@ -44,6 +50,10 @@ class ClaudeSettingsConfigurable : Configurable {
             row {
                 checkBox("Stream partial messages (token-by-token rendering)")
                     .bindSelected(settings::streamPartialMessages)
+            }
+            row {
+                checkBox("Use rich (JCEF) chat UI when available — falls back to plain text")
+                    .bindSelected(settings::useRichUi)
             }
         }
         ui = dialogPanel

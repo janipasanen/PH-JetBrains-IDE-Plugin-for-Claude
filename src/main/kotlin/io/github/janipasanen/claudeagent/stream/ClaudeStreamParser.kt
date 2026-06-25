@@ -41,12 +41,14 @@ object ClaudeStreamParser {
             return ClaudeEvent.SystemOther(sessionId, root.str("subtype"))
         }
         val tools = root.getAsJsonArray("tools")?.mapNotNull { it.asStringOrNull() } ?: emptyList()
+        val slash = root.getAsJsonArray("slash_commands")?.mapNotNull { it.asStringOrNull() } ?: emptyList()
         return ClaudeEvent.SystemInit(
             sessionId = sessionId,
             cwd = root.str("cwd"),
             model = root.str("model"),
             permissionMode = root.str("permissionMode"),
             tools = tools,
+            slashCommands = slash,
             apiKeySource = root.str("apiKeySource"),
             claudeCodeVersion = root.str("claude_code_version"),
         )

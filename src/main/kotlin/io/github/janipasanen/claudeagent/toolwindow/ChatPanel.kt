@@ -1,23 +1,29 @@
 package io.github.janipasanen.claudeagent.toolwindow
 
 import com.google.gson.JsonObject
+import com.intellij.history.LocalHistory
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
+import com.intellij.ui.jcef.JBCefApp
 import com.intellij.util.ui.JBUI
 import io.github.janipasanen.claudeagent.context.EditorContext
 import io.github.janipasanen.claudeagent.diff.DiffPreviewService
 import io.github.janipasanen.claudeagent.session.ClaudeSessionService
 import io.github.janipasanen.claudeagent.settings.ClaudeSettings
 import io.github.janipasanen.claudeagent.stream.ClaudeEvent
+import io.github.janipasanen.claudeagent.ui.JcefTranscript
+import io.github.janipasanen.claudeagent.ui.SwingTranscript
+import io.github.janipasanen.claudeagent.ui.Transcript
+import com.intellij.ui.JBColor
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
@@ -27,22 +33,21 @@ import java.awt.event.KeyEvent
 import javax.swing.AbstractAction
 import javax.swing.JButton
 import javax.swing.JPanel
-import javax.swing.JTextPane
 import javax.swing.KeyStroke
-import javax.swing.text.SimpleAttributeSet
-import javax.swing.text.StyleConstants
 
 /**
- * Swing chat UI (M1 + M2). Streams the transcript, drives [ClaudeSessionService], and adds
- * interactive permission approval, diff preview, editor-context attach, @-file insert and
- * session controls. Rich markdown/JCEF rendering is M4.
+ * Chat controller for the tool window. Renders via a pluggable [Transcript] (Swing default, JCEF
+ * opt-in), drives [ClaudeSessionService], and provides permission approval, diff preview,
+ * editor-context attach, @-file insert, slash commands, checkpoints and session controls.
  */
 class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposable, ClaudeSessionService.Listener {
 
     private val service = ClaudeSessionService.getInstance(project)
     private val settings = ClaudeSettings.getInstance()
 
-    private val transcript = JTextPane().apply { isEditable = false }
+    private val transcript: Transcript =
+        if (settings.useRichUi && JBCefApp.isSupported()) JcefTranscript() else SwingTranscript()
+
     private val input = JBTextArea(3, 40).apply {
         lineWrap = true
         wrapStyleWord = true
@@ -51,11 +56,11 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
     private val stopButton = JButton("Stop").apply { isEnabled = false }
     private val newChatButton = JButton("New Chat")
     private val atFileButton = JButton("@ File")
-    private val contextCheck = JBCheckBox("Attach open file & selection", false)
+    private val slashButton = JButton("/")
+    private val contextCheck = JBCheckBox("Attach open file, selection & problems", false)
     private val modeCombo = ComboBox(ClaudeSettings.PERMISSION_MODES.toTypedArray())
     private val status = JBLabel("Not started").apply { border = JBUI.Borders.empty(2, 6) }
 
-    // Permission approval
     private val pendingPermissions = ArrayDeque<ClaudeEvent.CanUseToolRequest>()
     private var currentPermission: ClaudeEvent.CanUseToolRequest? = null
     private val permLabel = JBLabel().apply { border = JBUI.Borders.empty(2, 6) }
@@ -64,14 +69,14 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
     private val viewDiffButton = JButton("View diff")
     private val permissionBar = JPanel(BorderLayout())
 
-    private var assistantHeaderShown = false
+    private var slashCommands: List<String> = emptyList()
     private var streamedThisTurn = false
     private var uiReady = false
 
     init {
         border = JBUI.Borders.empty(4)
         add(buildNorth(), BorderLayout.NORTH)
-        add(JBScrollPane(transcript), BorderLayout.CENTER)
+        add(transcript.component, BorderLayout.CENTER)
         add(buildSouth(), BorderLayout.SOUTH)
 
         wireActions()
@@ -79,10 +84,9 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
         service.addListener(this)
         uiReady = true
 
-        appendStyled(
+        transcript.note(
             "Welcome. This drives the Claude Code CLI with your Claude account, working in this project.\n" +
-                "In 'default' mode Claude asks before editing files or running commands — approve below.\n\n",
-            STYLE_SYSTEM,
+                "In 'default' mode Claude asks before editing files or running commands — approve below.\n",
         )
     }
 
@@ -102,7 +106,6 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
     }
 
     private fun buildSouth(): JPanel {
-        // Permission approval bar (hidden until a request arrives).
         permissionBar.border = JBUI.Borders.compound(
             JBUI.Borders.customLineTop(JBColor.border()),
             JBUI.Borders.empty(4),
@@ -119,6 +122,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
         )
 
         val inputButtons = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
+            add(slashButton)
             add(atFileButton)
             add(stopButton)
             add(sendButton)
@@ -140,6 +144,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
         stopButton.addActionListener { service.interrupt() }
         newChatButton.addActionListener { newChat() }
         atFileButton.addActionListener { chooseFile() }
+        slashButton.addActionListener { showSlashCommands() }
         approveButton.addActionListener { resolvePermission(true) }
         denyButton.addActionListener { resolvePermission(false) }
         viewDiffButton.addActionListener {
@@ -168,16 +173,17 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
         val context = if (contextCheck.isSelected) EditorContext.gather(project) else null
         val payload = if (context != null) "$context\n$text" else text
 
-        appendStyled("You\n", STYLE_USER_LABEL)
-        appendStyled("$text\n", STYLE_USER)
-        if (context != null) appendStyled("  (attached: open file & selection)\n", STYLE_SYSTEM)
+        // Checkpoint so the user can revert this turn's edits via Local History.
+        runCatching { LocalHistory.getInstance().putUserLabel(project, "Claude: ${text.take(60)}") }
+
+        transcript.user(text)
+        if (context != null) transcript.note("  (attached: open file, selection & problems)")
         input.text = ""
-        assistantHeaderShown = false
         streamedThisTurn = false
         setBusy(true)
 
         if (!service.sendUserMessage(payload)) {
-            appendStyled("Could not start Claude. See the notification / Settings.\n", STYLE_ERROR)
+            transcript.error("Could not start Claude. See the notification / Settings.")
             setBusy(false)
         }
     }
@@ -185,16 +191,14 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
     private fun newChat() {
         clearPermissions()
         service.newSession()
-        transcript.text = ""
-        assistantHeaderShown = false
+        transcript.clear()
         streamedThisTurn = false
         setBusy(false)
-        appendStyled("New session started.\n\n", STYLE_SYSTEM)
+        transcript.note("New session started.")
     }
 
     private fun chooseFile() {
-        val descriptor = FileChooserDescriptorFactory.createSingleFileDescriptor()
-            .withTitle("Add File To Prompt")
+        val descriptor = FileChooserDescriptorFactory.createSingleFileDescriptor().withTitle("Add File To Prompt")
         val base = project.basePath?.let { LocalFileSystem.getInstance().findFileByPath(it) }
         FileChooser.chooseFile(descriptor, project, base) { file ->
             val ref = if (base != null && file.path.startsWith(base.path)) {
@@ -205,6 +209,22 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
             input.insert("@$ref ", input.caretPosition)
             input.requestFocusInWindow()
         }
+    }
+
+    private fun showSlashCommands() {
+        if (slashCommands.isEmpty()) {
+            transcript.note("No slash commands reported yet — start a session first.")
+            return
+        }
+        JBPopupFactory.getInstance()
+            .createPopupChooserBuilder(slashCommands.sorted())
+            .setTitle("Slash commands")
+            .setItemChosenCallback { command ->
+                input.insert("/$command ", input.caretPosition)
+                input.requestFocusInWindow()
+            }
+            .createPopup()
+            .showUnderneathOf(slashButton)
     }
 
     // --- permission approval ---
@@ -227,10 +247,8 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
     private fun resolvePermission(allow: Boolean) {
         val req = currentPermission ?: return
         service.respondPermission(req.requestId, allow, req.input.takeIf { allow })
-        appendStyled(
-            "  ${if (allow) "✓ approved" else "✗ denied"} ${req.toolName}  ${summarize(req.input)}\n",
-            if (allow) STYLE_SYSTEM else STYLE_ERROR,
-        )
+        val line = "${if (allow) "✓ approved" else "✗ denied"} ${req.toolName}  ${summarize(req.input)}"
+        if (allow) transcript.note("  $line") else transcript.error("  $line")
         currentPermission = null
         showNextPermission()
     }
@@ -245,26 +263,24 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
 
     override fun onEvent(event: ClaudeEvent) {
         when (event) {
-            is ClaudeEvent.SystemInit ->
+            is ClaudeEvent.SystemInit -> {
                 status.text = "model: ${event.model ?: "?"}  ·  mode: ${event.permissionMode ?: "?"}"
+                if (event.slashCommands.isNotEmpty()) slashCommands = event.slashCommands
+            }
 
             is ClaudeEvent.AssistantTextDelta -> {
-                ensureAssistantHeader()
-                appendStyled(event.text, STYLE_ASSISTANT)
+                transcript.assistant(event.text)
                 streamedThisTurn = true
             }
 
             is ClaudeEvent.AssistantMessage -> {
-                if (!streamedThisTurn && !event.text.isNullOrEmpty()) {
-                    ensureAssistantHeader()
-                    appendStyled(event.text, STYLE_ASSISTANT)
-                }
-                event.toolUses.forEach { appendStyled("\n  ⚙ ${it.name}  ${it.summary()}\n", STYLE_TOOL) }
+                if (!streamedThisTurn && !event.text.isNullOrEmpty()) transcript.assistant(event.text)
+                event.toolUses.forEach { transcript.tool("${it.name}  ${it.summary()}") }
             }
 
             is ClaudeEvent.ToolResultMessage ->
                 event.toolResults.filter { it.isError }.forEach {
-                    appendStyled("  ⚠ ${it.content?.take(300)?.replace('\n', ' ')}\n", STYLE_ERROR)
+                    transcript.error("  ⚠ ${it.content?.take(300)?.replace('\n', ' ')}")
                 }
 
             is ClaudeEvent.CanUseToolRequest -> {
@@ -272,7 +288,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
                 showNextPermission()
             }
 
-            is ClaudeEvent.RateLimit -> appendStyled("\n  [rate limited — please wait]\n", STYLE_SYSTEM)
+            is ClaudeEvent.RateLimit -> transcript.note("  [rate limited — please wait]")
 
             is ClaudeEvent.Result -> finishTurn(event)
 
@@ -287,25 +303,14 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
     }
 
     override fun onError(message: String) {
-        appendStyled("$message\n", STYLE_ERROR)
+        transcript.error(message)
         setBusy(false)
     }
 
     private fun finishTurn(result: ClaudeEvent.Result) {
-        appendStyled("\n", STYLE_ASSISTANT)
-        if (result.isError && !result.text.isNullOrEmpty()) {
-            appendStyled("Error: ${result.text}\n", STYLE_ERROR)
-        }
-        result.totalCostUsd?.let { appendStyled("  — turn cost: $%.4f\n".format(it), STYLE_SYSTEM) }
-        appendStyled("\n", STYLE_ASSISTANT)
+        if (result.isError && !result.text.isNullOrEmpty()) transcript.error("Error: ${result.text}")
+        result.totalCostUsd?.let { transcript.note("  — turn cost: $%.4f".format(it)) }
         setBusy(false)
-    }
-
-    private fun ensureAssistantHeader() {
-        if (!assistantHeaderShown) {
-            appendStyled("Claude\n", STYLE_ASSISTANT_LABEL)
-            assistantHeaderShown = true
-        }
     }
 
     private fun setBusy(busy: Boolean) {
@@ -321,39 +326,8 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
         return ""
     }
 
-    private fun appendStyled(text: String, attrs: SimpleAttributeSet) {
-        val doc = transcript.styledDocument
-        doc.insertString(doc.length, text, attrs)
-        transcript.caretPosition = doc.length
-    }
-
     override fun dispose() {
         service.removeListener(this)
-    }
-
-    companion object {
-        private fun style(block: SimpleAttributeSet.() -> Unit) = SimpleAttributeSet().apply(block)
-
-        private val STYLE_USER_LABEL = style {
-            StyleConstants.setBold(this, true)
-            StyleConstants.setForeground(this, JBColor(0x2D6CC0, 0x589DF6))
-        }
-        private val STYLE_USER = style {}
-        private val STYLE_ASSISTANT_LABEL = style {
-            StyleConstants.setBold(this, true)
-            StyleConstants.setForeground(this, JBColor(0x3A8A3A, 0x6FBF6F))
-        }
-        private val STYLE_ASSISTANT = style {}
-        private val STYLE_TOOL = style {
-            StyleConstants.setForeground(this, JBColor.GRAY)
-            StyleConstants.setFontFamily(this, "monospaced")
-        }
-        private val STYLE_SYSTEM = style {
-            StyleConstants.setForeground(this, JBColor.GRAY)
-            StyleConstants.setItalic(this, true)
-        }
-        private val STYLE_ERROR = style {
-            StyleConstants.setForeground(this, JBColor(0xC0392B, 0xE06C5B))
-        }
+        transcript.dispose()
     }
 }
