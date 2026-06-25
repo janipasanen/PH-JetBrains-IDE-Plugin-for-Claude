@@ -4,8 +4,8 @@ import com.google.gson.JsonObject
 import com.intellij.execution.ExecutionException
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.process.KillableProcessHandler
-import com.intellij.execution.process.ProcessAdapter
 import com.intellij.execution.process.ProcessEvent
+import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.process.ProcessOutputTypes
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
@@ -177,7 +177,7 @@ class ClaudeSessionService(private val project: Project) : Disposable {
         return cmd
     }
 
-    private fun processListener() = object : ProcessAdapter() {
+    private fun processListener() = object : ProcessListener {
         override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
             when (outputType) {
                 ProcessOutputTypes.STDOUT -> appendStdout(event.text)

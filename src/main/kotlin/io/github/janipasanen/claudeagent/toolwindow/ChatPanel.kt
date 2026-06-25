@@ -4,7 +4,7 @@ import com.google.gson.JsonObject
 import com.intellij.history.LocalHistory
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.fileChooser.FileChooser
-import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.popup.JBPopupFactory
@@ -198,7 +198,8 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
     }
 
     private fun chooseFile() {
-        val descriptor = FileChooserDescriptorFactory.createSingleFileDescriptor().withTitle("Add File To Prompt")
+        val descriptor = FileChooserDescriptor(true, false, false, false, false, false)
+            .withTitle("Add File To Prompt")
         val base = project.basePath?.let { LocalFileSystem.getInstance().findFileByPath(it) }
         FileChooser.chooseFile(descriptor, project, base) { file ->
             val ref = if (base != null && file.path.startsWith(base.path)) {

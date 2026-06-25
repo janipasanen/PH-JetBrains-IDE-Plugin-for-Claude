@@ -1,4 +1,5 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask.FailureLevel
 
 plugins {
     id("java")
@@ -59,6 +60,12 @@ intellijPlatform {
     }
 
     pluginVerification {
+        // Fail only on real compatibility problems. Deprecated/experimental/internal/scheduled-for-
+        // removal API usages are reported as warnings (we knowingly use a few, e.g. LocalHistory).
+        failureLevel = listOf(
+            FailureLevel.COMPATIBILITY_PROBLEMS,
+            FailureLevel.INVALID_PLUGIN,
+        )
         ides {
             // Verify the single artifact against the actual target IDEs (all branch 261).
             // useInstaller = false uses the repackaged repo artifacts (required for Rider, etc.).
