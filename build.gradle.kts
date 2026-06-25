@@ -60,7 +60,10 @@ intellijPlatform {
 
     pluginVerification {
         ides {
-            recommended()
+            // Verify the single artifact against the actual target IDEs (all branch 261).
+            create("WS", "2026.1") // WebStorm
+            create("RD", "2026.1") // Rider
+            create("IU", "2026.1") // IntelliJ IDEA (compile target)
         }
     }
 }

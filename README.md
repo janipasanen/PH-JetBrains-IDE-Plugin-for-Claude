@@ -40,23 +40,38 @@ chat, diff, and permission UI.
   compatible (see the version/tag of the release you download).
 - JDK 21 (only needed to build from source).
 
+## Features
+
+- **Chat tool window** that streams Claude's response token-by-token, with tool-call activity.
+- **Agentic file edits** — Claude reads and edits your project on disk; the editor refreshes
+  automatically.
+- **Interactive permissions** — in `default` mode Claude asks before edits/commands; approve or
+  deny in the tool window, with a **View diff** preview for edits.
+- **Editor context** — attach the active file, selection, and the file's IDE problems to a prompt.
+- **@-file** insert, **slash-command** picker, **New Chat**/**Stop**, live model/permission-mode
+  switching, and **Local History checkpoints** so you can revert a turn's edits.
+- **Optional rich (JCEF) UI** with Markdown rendering; falls back to plain text where JCEF is
+  unavailable (e.g. Android Studio).
+
 ## Install (from disk)
 
-1. Download the plugin `.zip` from the [Releases](../../releases) page (pick the build whose tag
-   matches your IDE's platform branch, e.g. `+261`).
+See [docs/INSTALL.md](docs/INSTALL.md) for the full guide. In short:
+
+1. Download the plugin `.zip` from [Releases](../../releases) (pick the build whose tag matches your
+   IDE's platform branch, e.g. `+261`) — or build it (below).
 2. In your IDE: **Settings/Preferences → Plugins → ⚙ → Install Plugin from Disk…**, choose the zip.
 3. Restart the IDE. Open the **Claude** tool window and start chatting.
-4. If the CLI isn't auto-detected, set its path in **Settings → Tools → Claude**.
+4. If the CLI isn't auto-detected, set its path in **Settings → Tools → Claude Agent**.
 
 ## Build from source
 
 ```bash
 ./gradlew buildPlugin     # produces build/distributions/*.zip
 ./gradlew runIde          # launches a sandbox IDE with the plugin loaded
+./gradlew test            # unit tests
 ```
 
-(Exact toolchain — IntelliJ Platform Gradle Plugin version, target platform, Gradle/JDK — is
-defined in `gradle.properties` / `build.gradle.kts`.)
+See [docs/BUILD.md](docs/BUILD.md) for the toolchain, build matrix, and release process.
 
 ## Versioning / IDE compatibility
 
