@@ -23,7 +23,7 @@ class ClaudeSettings : SimplePersistentStateComponent<ClaudeSettings.State>(Stat
         /** `--model` value (e.g. "sonnet", "opus", "haiku"); blank = CLI default. */
         var model by string("")
 
-        /** `--permission-mode`. MVP default lets Claude edit files without prompting. */
+        /** `--permission-mode`. "default" prompts for approval (handled in the tool window). */
         var permissionMode by string(DEFAULT_PERMISSION_MODE)
 
         /** Extra raw CLI arguments, whitespace-separated. */
@@ -54,7 +54,7 @@ class ClaudeSettings : SimplePersistentStateComponent<ClaudeSettings.State>(Stat
         set(value) { state.streamPartialMessages = value }
 
     companion object {
-        const val DEFAULT_PERMISSION_MODE = "acceptEdits"
+        const val DEFAULT_PERMISSION_MODE = "default"
 
         /** Values accepted by `claude --permission-mode` (verified against CLI 2.1.x). */
         val PERMISSION_MODES = listOf(

@@ -30,6 +30,7 @@ object ClaudeStreamParser {
             "user" -> parseUser(root, sessionId)
             "result" -> parseResult(root, sessionId)
             "control_request" -> parseControlRequest(root, sessionId)
+            "control_response" -> null // ack to our outgoing control requests (initialize, etc.)
             "rate_limit_event" -> ClaudeEvent.RateLimit(sessionId)
             else -> ClaudeEvent.Unknown(sessionId, root.str("type"), trimmed)
         }

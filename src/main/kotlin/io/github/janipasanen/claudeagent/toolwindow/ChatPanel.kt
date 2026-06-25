@@ -1,13 +1,22 @@
 package io.github.janipasanen.claudeagent.toolwindow
 
+import com.google.gson.JsonObject
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.ui.JBColor
+import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
+import io.github.janipasanen.claudeagent.context.EditorContext
+import io.github.janipasanen.claudeagent.diff.DiffPreviewService
 import io.github.janipasanen.claudeagent.session.ClaudeSessionService
+import io.github.janipasanen.claudeagent.settings.ClaudeSettings
 import io.github.janipasanen.claudeagent.stream.ClaudeEvent
 import java.awt.BorderLayout
 import java.awt.Dimension
@@ -24,62 +33,129 @@ import javax.swing.text.SimpleAttributeSet
 import javax.swing.text.StyleConstants
 
 /**
- * Minimal Swing chat UI (M1). Renders the streamed transcript and drives [ClaudeSessionService].
- * Richer rendering (markdown, diffs, inline permission prompts) arrives in M2/M4.
+ * Swing chat UI (M1 + M2). Streams the transcript, drives [ClaudeSessionService], and adds
+ * interactive permission approval, diff preview, editor-context attach, @-file insert and
+ * session controls. Rich markdown/JCEF rendering is M4.
  */
 class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposable, ClaudeSessionService.Listener {
 
     private val service = ClaudeSessionService.getInstance(project)
+    private val settings = ClaudeSettings.getInstance()
 
     private val transcript = JTextPane().apply { isEditable = false }
     private val input = JBTextArea(3, 40).apply {
         lineWrap = true
         wrapStyleWord = true
-        emptyText.text = "Ask Claude to build, fix, or explain code in this project…"
     }
     private val sendButton = JButton("Send")
     private val stopButton = JButton("Stop").apply { isEnabled = false }
+    private val newChatButton = JButton("New Chat")
+    private val atFileButton = JButton("@ File")
+    private val contextCheck = JBCheckBox("Attach open file & selection", false)
+    private val modeCombo = ComboBox(ClaudeSettings.PERMISSION_MODES.toTypedArray())
     private val status = JBLabel("Not started").apply { border = JBUI.Borders.empty(2, 6) }
+
+    // Permission approval
+    private val pendingPermissions = ArrayDeque<ClaudeEvent.CanUseToolRequest>()
+    private var currentPermission: ClaudeEvent.CanUseToolRequest? = null
+    private val permLabel = JBLabel().apply { border = JBUI.Borders.empty(2, 6) }
+    private val approveButton = JButton("Approve")
+    private val denyButton = JButton("Deny")
+    private val viewDiffButton = JButton("View diff")
+    private val permissionBar = JPanel(BorderLayout())
 
     private var assistantHeaderShown = false
     private var streamedThisTurn = false
+    private var uiReady = false
 
     init {
         border = JBUI.Borders.empty(4)
-        add(status, BorderLayout.NORTH)
+        add(buildNorth(), BorderLayout.NORTH)
         add(JBScrollPane(transcript), BorderLayout.CENTER)
-        add(buildInputPanel(), BorderLayout.SOUTH)
+        add(buildSouth(), BorderLayout.SOUTH)
 
-        sendButton.addActionListener { send() }
-        stopButton.addActionListener { service.stop() }
+        wireActions()
         installInputKeybindings()
-
         service.addListener(this)
+        uiReady = true
+
         appendStyled(
             "Welcome. This drives the Claude Code CLI with your Claude account, working in this project.\n" +
-                "Permission mode is set in Settings → Tools → Claude Agent (default: acceptEdits).\n\n",
+                "In 'default' mode Claude asks before editing files or running commands — approve below.\n\n",
             STYLE_SYSTEM,
         )
     }
 
-    private fun buildInputPanel(): JPanel {
-        val buttons = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
+    private fun buildNorth(): JPanel {
+        modeCombo.selectedItem = settings.permissionMode
+        modeCombo.toolTipText = "Permission mode"
+        val controls = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0)).apply {
+            add(contextCheck)
+            add(JBLabel("Mode:"))
+            add(modeCombo)
+            add(newChatButton)
+        }
+        return JPanel(BorderLayout()).apply {
+            add(status, BorderLayout.WEST)
+            add(controls, BorderLayout.EAST)
+        }
+    }
+
+    private fun buildSouth(): JPanel {
+        // Permission approval bar (hidden until a request arrives).
+        permissionBar.border = JBUI.Borders.compound(
+            JBUI.Borders.customLineTop(JBColor.border()),
+            JBUI.Borders.empty(4),
+        )
+        permissionBar.isVisible = false
+        permissionBar.add(permLabel, BorderLayout.CENTER)
+        permissionBar.add(
+            JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
+                add(viewDiffButton)
+                add(denyButton)
+                add(approveButton)
+            },
+            BorderLayout.EAST,
+        )
+
+        val inputButtons = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
+            add(atFileButton)
             add(stopButton)
             add(sendButton)
         }
-        return JPanel(BorderLayout(4, 4)).apply {
+        val inputPanel = JPanel(BorderLayout(4, 4)).apply {
             border = JBUI.Borders.emptyTop(6)
             add(JBScrollPane(input).apply { preferredSize = Dimension(0, JBUI.scale(72)) }, BorderLayout.CENTER)
-            add(buttons, BorderLayout.SOUTH)
+            add(inputButtons, BorderLayout.SOUTH)
+        }
+
+        return JPanel(BorderLayout()).apply {
+            add(permissionBar, BorderLayout.NORTH)
+            add(inputPanel, BorderLayout.CENTER)
+        }
+    }
+
+    private fun wireActions() {
+        sendButton.addActionListener { send() }
+        stopButton.addActionListener { service.interrupt() }
+        newChatButton.addActionListener { newChat() }
+        atFileButton.addActionListener { chooseFile() }
+        approveButton.addActionListener { resolvePermission(true) }
+        denyButton.addActionListener { resolvePermission(false) }
+        viewDiffButton.addActionListener {
+            currentPermission?.let { DiffPreviewService.showPreview(project, it.toolName, it.input) }
+        }
+        modeCombo.addActionListener {
+            if (!uiReady) return@addActionListener
+            val mode = modeCombo.selectedItem as? String ?: return@addActionListener
+            settings.permissionMode = mode
+            service.setPermissionMode(mode)
         }
     }
 
     private fun installInputKeybindings() {
         input.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "claude-send")
-        input.inputMap.put(
-            KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK),
-            "insert-break", // built-in JTextArea newline action
-        )
+        input.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK), "insert-break")
         input.actionMap.put("claude-send", object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent) = send()
         })
@@ -89,20 +165,83 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
         val text = input.text.trim()
         if (text.isEmpty() || !sendButton.isEnabled) return
 
+        val context = if (contextCheck.isSelected) EditorContext.gather(project) else null
+        val payload = if (context != null) "$context\n$text" else text
+
         appendStyled("You\n", STYLE_USER_LABEL)
         appendStyled("$text\n", STYLE_USER)
+        if (context != null) appendStyled("  (attached: open file & selection)\n", STYLE_SYSTEM)
         input.text = ""
         assistantHeaderShown = false
         streamedThisTurn = false
         setBusy(true)
 
-        if (!service.sendUserMessage(text)) {
+        if (!service.sendUserMessage(payload)) {
             appendStyled("Could not start Claude. See the notification / Settings.\n", STYLE_ERROR)
             setBusy(false)
         }
     }
 
-    // --- ClaudeSessionService.Listener (already dispatched on the EDT) ---
+    private fun newChat() {
+        clearPermissions()
+        service.newSession()
+        transcript.text = ""
+        assistantHeaderShown = false
+        streamedThisTurn = false
+        setBusy(false)
+        appendStyled("New session started.\n\n", STYLE_SYSTEM)
+    }
+
+    private fun chooseFile() {
+        val descriptor = FileChooserDescriptorFactory.createSingleFileDescriptor()
+            .withTitle("Add File To Prompt")
+        val base = project.basePath?.let { LocalFileSystem.getInstance().findFileByPath(it) }
+        FileChooser.chooseFile(descriptor, project, base) { file ->
+            val ref = if (base != null && file.path.startsWith(base.path)) {
+                file.path.removePrefix(base.path).trimStart('/')
+            } else {
+                file.path
+            }
+            input.insert("@$ref ", input.caretPosition)
+            input.requestFocusInWindow()
+        }
+    }
+
+    // --- permission approval ---
+
+    private fun showNextPermission() {
+        if (currentPermission != null) return
+        val next = pendingPermissions.removeFirstOrNull()
+        if (next == null) {
+            permissionBar.isVisible = false
+            revalidate(); repaint()
+            return
+        }
+        currentPermission = next
+        permLabel.text = "Allow ${next.toolName}?  ${summarize(next.input)}"
+        viewDiffButton.isVisible = DiffPreviewService.canPreview(next.toolName)
+        permissionBar.isVisible = true
+        revalidate(); repaint()
+    }
+
+    private fun resolvePermission(allow: Boolean) {
+        val req = currentPermission ?: return
+        service.respondPermission(req.requestId, allow, req.input.takeIf { allow })
+        appendStyled(
+            "  ${if (allow) "✓ approved" else "✗ denied"} ${req.toolName}  ${summarize(req.input)}\n",
+            if (allow) STYLE_SYSTEM else STYLE_ERROR,
+        )
+        currentPermission = null
+        showNextPermission()
+    }
+
+    private fun clearPermissions() {
+        pendingPermissions.clear()
+        currentPermission = null
+        permissionBar.isVisible = false
+    }
+
+    // --- ClaudeSessionService.Listener (dispatched on the EDT) ---
 
     override fun onEvent(event: ClaudeEvent) {
         when (event) {
@@ -120,9 +259,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
                     ensureAssistantHeader()
                     appendStyled(event.text, STYLE_ASSISTANT)
                 }
-                event.toolUses.forEach {
-                    appendStyled("\n  ⚙ ${it.name}  ${it.summary()}\n", STYLE_TOOL)
-                }
+                event.toolUses.forEach { appendStyled("\n  ⚙ ${it.name}  ${it.summary()}\n", STYLE_TOOL) }
             }
 
             is ClaudeEvent.ToolResultMessage ->
@@ -130,12 +267,10 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
                     appendStyled("  ⚠ ${it.content?.take(300)?.replace('\n', ' ')}\n", STYLE_ERROR)
                 }
 
-            is ClaudeEvent.CanUseToolRequest ->
-                appendStyled(
-                    "\n  ⚠ ${event.toolName} needs approval. Interactive approval arrives in M2; " +
-                        "for now set the permission mode in Settings.\n",
-                    STYLE_SYSTEM,
-                )
+            is ClaudeEvent.CanUseToolRequest -> {
+                pendingPermissions.addLast(event)
+                showNextPermission()
+            }
 
             is ClaudeEvent.RateLimit -> appendStyled("\n  [rate limited — please wait]\n", STYLE_SYSTEM)
 
@@ -147,6 +282,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
 
     override fun onProcessTerminated(exitCode: Int) {
         setBusy(false)
+        clearPermissions()
         status.text = "Stopped (exit $exitCode)"
     }
 
@@ -159,10 +295,6 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
         appendStyled("\n", STYLE_ASSISTANT)
         if (result.isError && !result.text.isNullOrEmpty()) {
             appendStyled("Error: ${result.text}\n", STYLE_ERROR)
-        }
-        if (result.permissionDenials.isNotEmpty()) {
-            val denied = result.permissionDenials.mapNotNull { it.toolName }.distinct().joinToString(", ")
-            appendStyled("  (denied without prompt: $denied — change permission mode in Settings)\n", STYLE_SYSTEM)
         }
         result.totalCostUsd?.let { appendStyled("  — turn cost: $%.4f\n".format(it), STYLE_SYSTEM) }
         appendStyled("\n", STYLE_ASSISTANT)
@@ -179,6 +311,14 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()), Disposab
     private fun setBusy(busy: Boolean) {
         sendButton.isEnabled = !busy
         stopButton.isEnabled = busy
+    }
+
+    private fun summarize(input: JsonObject?): String {
+        val obj = input ?: return ""
+        for (key in listOf("file_path", "command", "path", "pattern", "url")) {
+            obj.get(key)?.takeIf { it.isJsonPrimitive }?.let { return it.asString }
+        }
+        return ""
     }
 
     private fun appendStyled(text: String, attrs: SimpleAttributeSet) {

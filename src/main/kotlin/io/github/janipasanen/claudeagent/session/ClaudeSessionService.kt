@@ -96,6 +96,8 @@ class ClaudeSessionService(private val project: Project) : Disposable {
         handler.addProcessListener(processListener())
         processHandler = handler
         handler.startNotify()
+        // Establish the bidirectional control channel so the CLI routes can_use_tool to us.
+        writeLine(initializeJson())
         log.info("Started claude session $sessionId in $workDir")
         return true
     }
@@ -116,6 +118,48 @@ class ClaudeSessionService(private val project: Project) : Disposable {
         return true
     }
 
+    /** Reply to a `can_use_tool` request. [updatedInput] (when allowing) defaults to the original. */
+    fun respondPermission(requestId: String, allow: Boolean, updatedInput: JsonObject?, denyMessage: String? = null) {
+        if (!isRunning()) return
+        writeLine(permissionResponseJson(requestId, allow, updatedInput, denyMessage))
+    }
+
+    /** Change the permission mode live (default / acceptEdits / plan / bypassPermissions / …). */
+    fun setPermissionMode(mode: String) {
+        if (!isRunning()) return
+        val req = JsonObject().apply {
+            addProperty("subtype", "set_permission_mode")
+            addProperty("mode", mode)
+        }
+        writeLine(controlRequestJson(req))
+    }
+
+    /** Change the model live. */
+    fun setModel(model: String) {
+        if (!isRunning()) return
+        val req = JsonObject().apply {
+            addProperty("subtype", "set_model")
+            addProperty("model", model)
+        }
+        writeLine(controlRequestJson(req))
+    }
+
+    /** Interrupt the current turn (softer than killing the process). */
+    fun interrupt() {
+        if (!isRunning()) {
+            stop()
+            return
+        }
+        val req = JsonObject().apply { addProperty("subtype", "interrupt") }
+        writeLine(controlRequestJson(req))
+    }
+
+    /** Stop the current process and start a brand-new session. */
+    fun newSession() {
+        stop()
+        start()
+    }
+
     override fun dispose() {
         stop()
         listeners.clear()
@@ -133,6 +177,8 @@ class ClaudeSessionService(private val project: Project) : Disposable {
 
         cmd.addParameters("-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose")
         if (settings.streamPartialMessages) cmd.addParameter("--include-partial-messages")
+        // Route tool-approval requests back to us over stdio (paired with the initialize handshake).
+        cmd.addParameters("--permission-prompt-tool", "stdio")
         cmd.addParameters("--permission-mode", settings.permissionMode)
         if (settings.model.isNotBlank()) cmd.addParameters("--model", settings.model)
         sessionId?.let { cmd.addParameters("--session-id", it) }
@@ -206,6 +252,55 @@ class ClaudeSessionService(private val project: Project) : Disposable {
         }
         return gson.toJson(root)
     }
+
+    /** The handshake that opens the control channel (mirrors @anthropic-ai/claude-agent-sdk). */
+    private fun initializeJson(): String {
+        val request = JsonObject().apply {
+            addProperty("subtype", "initialize")
+            add("hooks", JsonObject())
+            add("sdkMcpServers", com.google.gson.JsonArray())
+        }
+        return controlRequestJson(request, requestId = "init-1")
+    }
+
+    private fun controlRequestJson(request: JsonObject, requestId: String = randomRequestId()): String {
+        val root = JsonObject().apply {
+            addProperty("request_id", requestId)
+            addProperty("type", "control_request")
+            add("request", request)
+        }
+        return gson.toJson(root)
+    }
+
+    private fun permissionResponseJson(
+        requestId: String,
+        allow: Boolean,
+        updatedInput: JsonObject?,
+        denyMessage: String?,
+    ): String {
+        val decision = JsonObject().apply {
+            if (allow) {
+                addProperty("behavior", "allow")
+                add("updatedInput", updatedInput ?: JsonObject())
+            } else {
+                addProperty("behavior", "deny")
+                addProperty("message", denyMessage ?: "User rejected this action")
+                addProperty("interrupt", false)
+            }
+        }
+        val response = JsonObject().apply {
+            addProperty("subtype", "success")
+            addProperty("request_id", requestId)
+            add("response", decision)
+        }
+        val root = JsonObject().apply {
+            addProperty("type", "control_response")
+            add("response", response)
+        }
+        return gson.toJson(root)
+    }
+
+    private fun randomRequestId(): String = UUID.randomUUID().toString()
 
     // --- VFS refresh after edits ---
 
