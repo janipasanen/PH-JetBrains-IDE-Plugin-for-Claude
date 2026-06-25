@@ -49,6 +49,51 @@ class ClaudeStreamParserTest {
     }
 
     @Test
+    fun `can_use_tool request is parsed`() {
+        val line = """{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Write","input":{"file_path":"/a"}}}"""
+        val event = ClaudeStreamParser.parse(line)
+        assertTrue(event is ClaudeEvent.CanUseToolRequest)
+        event as ClaudeEvent.CanUseToolRequest
+        assertEquals("r1", event.requestId)
+        assertEquals("Write", event.toolName)
+        assertEquals("/a", event.input?.get("file_path")?.asString)
+    }
+
+    @Test
+    fun `result carries cost and permission denials`() {
+        val line = """{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.01,"permission_denials":[{"tool_name":"Bash","tool_input":{"command":"rm"}}]}"""
+        val result = ClaudeStreamParser.parse(line) as ClaudeEvent.Result
+        assertFalse(result.isError)
+        assertEquals("done", result.text)
+        assertEquals(0.01, result.totalCostUsd!!, 1e-9)
+        assertEquals(1, result.permissionDenials.size)
+        assertEquals("Bash", result.permissionDenials[0].toolName)
+    }
+
+    @Test
+    fun `tool_result is delivered inside a user event`() {
+        val line = """{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"ok","is_error":false}]}}"""
+        val event = ClaudeStreamParser.parse(line) as ClaudeEvent.ToolResultMessage
+        assertEquals(1, event.toolResults.size)
+        assertEquals("tu1", event.toolResults[0].toolUseId)
+        assertEquals("ok", event.toolResults[0].content)
+        assertFalse(event.toolResults[0].isError)
+    }
+
+    @Test
+    fun `stream_event text delta is surfaced`() {
+        val line = """{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}}"""
+        val event = ClaudeStreamParser.parse(line) as ClaudeEvent.AssistantTextDelta
+        assertEquals("hello", event.text)
+    }
+
+    @Test
+    fun `non-text stream events and control_response are skipped`() {
+        assertEquals(null, ClaudeStreamParser.parse("""{"type":"control_response","response":{"subtype":"success"}}"""))
+        assertEquals(null, ClaudeStreamParser.parse("""{"type":"stream_event","event":{"type":"message_stop"}}"""))
+    }
+
+    @Test
     fun `assistant tool_use blocks are extracted with touched path`() {
         val line = """
             {"type":"assistant","session_id":"s1","message":{"role":"assistant","content":[

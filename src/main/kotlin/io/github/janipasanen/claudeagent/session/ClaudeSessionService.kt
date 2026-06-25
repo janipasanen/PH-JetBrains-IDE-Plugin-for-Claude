@@ -1,6 +1,5 @@
 package io.github.janipasanen.claudeagent.session
 
-import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.intellij.execution.ExecutionException
 import com.intellij.execution.configurations.GeneralCommandLine
@@ -21,6 +20,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.util.execution.ParametersListUtil
 import io.github.janipasanen.claudeagent.process.ClaudeBinaryLocator
+import io.github.janipasanen.claudeagent.protocol.ClaudeControlProtocol
 import io.github.janipasanen.claudeagent.settings.ClaudeSettings
 import io.github.janipasanen.claudeagent.stream.ClaudeEvent
 import io.github.janipasanen.claudeagent.stream.ClaudeStreamParser
@@ -47,7 +47,6 @@ class ClaudeSessionService(private val project: Project) : Disposable {
     }
 
     private val log = thisLogger()
-    private val gson = Gson()
     private val listeners = CopyOnWriteArrayList<Listener>()
     private val stdinLock = Any()
     private val stdoutBuffer = StringBuilder()
@@ -97,7 +96,7 @@ class ClaudeSessionService(private val project: Project) : Disposable {
         processHandler = handler
         handler.startNotify()
         // Establish the bidirectional control channel so the CLI routes can_use_tool to us.
-        writeLine(initializeJson())
+        writeLine(ClaudeControlProtocol.initialize("init-1"))
         log.info("Started claude session $sessionId in $workDir")
         return true
     }
@@ -114,34 +113,26 @@ class ClaudeSessionService(private val project: Project) : Disposable {
     /** Send a user turn; starts the process if needed. Returns false if it could not be started. */
     fun sendUserMessage(text: String): Boolean {
         if (!isRunning() && !start()) return false
-        writeLine(userMessageJson(text))
+        writeLine(ClaudeControlProtocol.userMessage(text))
         return true
     }
 
     /** Reply to a `can_use_tool` request. [updatedInput] (when allowing) defaults to the original. */
     fun respondPermission(requestId: String, allow: Boolean, updatedInput: JsonObject?, denyMessage: String? = null) {
         if (!isRunning()) return
-        writeLine(permissionResponseJson(requestId, allow, updatedInput, denyMessage))
+        writeLine(ClaudeControlProtocol.permissionResponse(requestId, allow, updatedInput, denyMessage))
     }
 
     /** Change the permission mode live (default / acceptEdits / plan / bypassPermissions / …). */
     fun setPermissionMode(mode: String) {
         if (!isRunning()) return
-        val req = JsonObject().apply {
-            addProperty("subtype", "set_permission_mode")
-            addProperty("mode", mode)
-        }
-        writeLine(controlRequestJson(req))
+        writeLine(ClaudeControlProtocol.setPermissionMode(mode, randomRequestId()))
     }
 
     /** Change the model live. */
     fun setModel(model: String) {
         if (!isRunning()) return
-        val req = JsonObject().apply {
-            addProperty("subtype", "set_model")
-            addProperty("model", model)
-        }
-        writeLine(controlRequestJson(req))
+        writeLine(ClaudeControlProtocol.setModel(model, randomRequestId()))
     }
 
     /** Interrupt the current turn (softer than killing the process). */
@@ -150,8 +141,7 @@ class ClaudeSessionService(private val project: Project) : Disposable {
             stop()
             return
         }
-        val req = JsonObject().apply { addProperty("subtype", "interrupt") }
-        writeLine(controlRequestJson(req))
+        writeLine(ClaudeControlProtocol.interrupt(randomRequestId()))
     }
 
     /** Stop the current process and start a brand-new session. */
@@ -240,65 +230,6 @@ class ClaudeSessionService(private val project: Project) : Disposable {
                 log.warn("Failed to write to claude stdin", e)
             }
         }
-    }
-
-    private fun userMessageJson(text: String): String {
-        val message = JsonObject().apply {
-            addProperty("role", "user")
-            addProperty("content", text)
-        }
-        val root = JsonObject().apply {
-            addProperty("type", "user")
-            add("message", message)
-        }
-        return gson.toJson(root)
-    }
-
-    /** The handshake that opens the control channel (mirrors @anthropic-ai/claude-agent-sdk). */
-    private fun initializeJson(): String {
-        val request = JsonObject().apply {
-            addProperty("subtype", "initialize")
-            add("hooks", JsonObject())
-            add("sdkMcpServers", com.google.gson.JsonArray())
-        }
-        return controlRequestJson(request, requestId = "init-1")
-    }
-
-    private fun controlRequestJson(request: JsonObject, requestId: String = randomRequestId()): String {
-        val root = JsonObject().apply {
-            addProperty("request_id", requestId)
-            addProperty("type", "control_request")
-            add("request", request)
-        }
-        return gson.toJson(root)
-    }
-
-    private fun permissionResponseJson(
-        requestId: String,
-        allow: Boolean,
-        updatedInput: JsonObject?,
-        denyMessage: String?,
-    ): String {
-        val decision = JsonObject().apply {
-            if (allow) {
-                addProperty("behavior", "allow")
-                add("updatedInput", updatedInput ?: JsonObject())
-            } else {
-                addProperty("behavior", "deny")
-                addProperty("message", denyMessage ?: "User rejected this action")
-                addProperty("interrupt", false)
-            }
-        }
-        val response = JsonObject().apply {
-            addProperty("subtype", "success")
-            addProperty("request_id", requestId)
-            add("response", decision)
-        }
-        val root = JsonObject().apply {
-            addProperty("type", "control_response")
-            add("response", response)
-        }
-        return gson.toJson(root)
     }
 
     private fun randomRequestId(): String = UUID.randomUUID().toString()
