@@ -46,11 +46,16 @@ intellijPlatform {
         }
     }
 
-    // Plugin signing for releases (M3). Values come from env / CI; safe to leave unset locally.
+    // Plugin signing for releases (M3). Secrets hold PEM *content* (CI-friendly); unset locally.
     signing {
-        certificateChainFile = providers.environmentVariable("CERTIFICATE_CHAIN").map { file(it) }
-        privateKeyFile = providers.environmentVariable("PRIVATE_KEY").map { file(it) }
+        certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("PRIVATE_KEY")
         password = providers.environmentVariable("PRIVATE_KEY_PASSWORD")
+    }
+
+    // Marketplace publishing (only if ever published; personal use installs from disk).
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
     }
 
     pluginVerification {
