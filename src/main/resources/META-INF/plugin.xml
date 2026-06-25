@@ -1,0 +1,38 @@
+<idea-plugin>
+    <id>io.github.janipasanen.claudeagent</id>
+    <name>Claude Agent</name>
+    <vendor email="jani.m.pasanen@gmail.com" url="https://github.com/janipasanen">Jani Pasanen</vendor>
+
+    <description><![CDATA[
+        <p><b>Agentic coding with your own Claude account</b>, inside JetBrains IDEs — no JetBrains AI
+        credits and no separate API key.</p>
+        <p>This plugin drives the locally-installed <a href="https://docs.claude.com/en/docs/claude-code">Claude Code CLI</a>
+        (which you log in to with your Claude subscription) and renders the conversation, tool activity,
+        and file edits in a tool window. Claude works directly in your open project — reading and editing
+        source like Claude Code in the terminal, but with an IDE-native chat, diff, and permission UI.</p>
+        <p>Requires the <code>claude</code> CLI installed and logged in. Independent, unofficial project;
+        not affiliated with Anthropic or JetBrains.</p>
+    ]]></description>
+
+    <!-- Product-agnostic: loads in Rider, WebStorm, Android Studio and other IntelliJ-based IDEs. -->
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+            id="Claude"
+            anchor="right"
+            secondary="false"
+            factoryClass="io.github.janipasanen.claudeagent.toolwindow.ClaudeToolWindowFactory"/>
+
+        <notificationGroup id="Claude Agent" displayType="BALLOON"/>
+
+        <!-- Persisted settings (ClaudeSessionService is a light @Service and needs no registration). -->
+        <applicationService serviceImplementation="io.github.janipasanen.claudeagent.settings.ClaudeSettings"/>
+
+        <applicationConfigurable
+            parentId="tools"
+            id="io.github.janipasanen.claudeagent.settings"
+            displayName="Claude Agent"
+            instance="io.github.janipasanen.claudeagent.settings.ClaudeSettingsConfigurable"/>
+    </extensions>
+</idea-plugin>

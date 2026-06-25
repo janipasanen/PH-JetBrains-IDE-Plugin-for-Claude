@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+gradle-app.setting
+
+# IntelliJ Platform Gradle Plugin / sandbox
+.intellijPlatform/
+
+# IDE project files
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config / secrets
+*.local
+local.properties
+signing/
+*.pem
+*.p12
+
+# Logs
+*.log
